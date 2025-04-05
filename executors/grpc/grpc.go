@@ -1,301 +1,162 @@
 package grpc
 
 import (
-	"bytes"
-	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
-	"time"
+    "context"
+    "encoding/base64"
+    "fmt"
+    "strings"
 
-	"github.com/fullstorydev/grpcurl"
-	"github.com/golang/protobuf/proto"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/grpcreflect"
-	"github.com/mitchellh/mapstructure"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-	reflectpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-	"google.golang.org/grpc/status"
-
-	"github.com/ovh/venom"
+    "github.com/fullstorydev/grpcurl"
+    "github.com/golang/protobuf/proto"
+    "github.com/ovh/venom"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/codes"
+    "google.golang.org/grpc/credentials/insecure"
+    "google.golang.org/grpc/metadata"
+    "google.golang.org/grpc/status"
+    rpb "google.golang.org/genproto/googleapis/rpc/status"
 )
 
-// Name for test exec
+// Name of executor
 const Name = "grpc"
 
-// New returns a new Test Exec
-func New() venom.Executor {
-	return &Executor{}
-}
-
-// Executor represents a Test Exec
+// Executor represents the gRPC executor
 type Executor struct {
-	URL                  string                 `json:"url" yaml:"url"`
-	Service              string                 `json:"service" yaml:"service"`
-	Method               string                 `json:"method" yaml:"method"`
-	JSONDefaultFields    bool                   `json:"default_fields" yaml:"default_fields"`
-	IncludeTextSeparator bool                   `json:"include_text_separator" yaml:"include_text_separator"`
-	Data                 map[string]interface{} `json:"data" yaml:"data"`
-	Headers              map[string]string      `json:"headers" yaml:"headers"`
-	ConnectTimeout       *int64                 `json:"connect_timeout" yaml:"connect_timeout"`
-	TLSClientCert        string                 `json:"tls_client_cert" yaml:"tls_client_cert" mapstructure:"tls_client_cert"`
-	TLSClientKey         string                 `json:"tls_client_key" yaml:"tls_client_key" mapstructure:"tls_client_key"`
-	TLSRootCA            string                 `json:"tls_root_ca" yaml:"tls_root_ca" mapstructure:"tls_root_ca"`
-	IgnoreVerifySSL      bool                   `json:"ignore_verify_ssl" yaml:"ignore_verify_ssl" mapstructure:"ignore_verify_ssl"`
+    URL            string            `json:"url" yaml:"url"`
+    Service        string            `json:"service" yaml:"service"`
+    Method         string            `json:"method" yaml:"method"`
+    Data           string            `json:"data,omitempty" yaml:"data,omitempty"`
+    Headers        map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
+    ConnectTimeout int               `json:"connect_timeout,omitempty" yaml:"connect_timeout,omitempty"`
+    TLSRootCA      string            `json:"tls_root_ca,omitempty" yaml:"tls_root_ca,omitempty"`
+    TLSClientCert  string            `json:"tls_client_cert,omitempty" yaml:"tls_client_cert,omitempty"`
+    TLSClientKey   string            `json:"tls_client_key,omitempty" yaml:"tls_client_key,omitempty"`
+    IgnoreVerifySSL bool             `json:"ignore_verify_ssl,omitempty" yaml:"ignore_verify_ssl,omitempty"`
 }
 
 // Result represents a step result
 type Result struct {
-	Systemout     string      `json:"systemout,omitempty" yaml:"systemout,omitempty"`
-	SystemoutJSON interface{} `json:"systemoutjson,omitempty" yaml:"systemoutjson,omitempty"`
-	Systemerr     string      `json:"systemerr,omitempty" yaml:"systemerr,omitempty"`
-	SystemerrJSON interface{} `json:"systemerrjson,omitempty" yaml:"systemerrjson,omitempty"`
-	Err           string      `json:"err,omitempty" yaml:"err,omitempty"`
-	Code          string      `json:"code,omitempty" yaml:"code,omitempty"`
-	TimeSeconds   float64     `json:"timeseconds,omitempty" yaml:"timeseconds,omitempty"`
+    Code         int                    `json:"code" yaml:"code"`
+    SystemOut    string                 `json:"systemout" yaml:"systemout"`
+    SystemErr    string                 `json:"systemerr" yaml:"systemerr"`
+    Errors       map[string]interface{} `json:"errors" yaml:"errors"`
 }
 
-type customHandler struct {
-	formatter grpcurl.Formatter
-	target    *Result
-	err       error
+// New returns a new Executor
+func New() venom.Executor {
+    return &Executor{}
 }
 
-// OnResolveMethod is called with a descriptor of the method that is being invoked.
-func (*customHandler) OnResolveMethod(m *desc.MethodDescriptor) {}
-
-// OnSendHeaders is called with the request metadata that is being sent.
-func (*customHandler) OnSendHeaders(metadata.MD) {}
-
-// OnReceiveHeaders is called when response headers have been received.
-func (*customHandler) OnReceiveHeaders(m metadata.MD) {}
-
-// OnReceiveResponse is called for each response message received.
-func (c *customHandler) OnReceiveResponse(msg proto.Message) {
-	res, err := c.formatter(msg)
-	if err != nil || c.err != nil {
-		c.err = err
-		return
-	}
-	c.target.Systemout = res
+// GetDefaultAssertions returns default assertions for this executor
+func (Executor) GetDefaultAssertions() venom.StepAssertions {
+    return venom.StepAssertions{
+        Assertions: []string{"result.code ShouldEqual 0"},
+    }
 }
 
-// OnReceiveTrailers is called when response trailers and final RPC status have been received.
-func (c *customHandler) OnReceiveTrailers(stat *status.Status, met metadata.MD) {
-	if err := stat.Err(); err != nil {
-		c.target.Systemerr = err.Error()
-	}
-	c.target.Code = strconv.Itoa(int(uint32(stat.Code())))
+// Run executes the gRPC test step
+func (e *Executor) Run(ctx context.Context, step venom.TestStep) (interface{}, error) {
+    // Decode step using venom’s current method
+    if err := venom.JSONUnmarshalStep(step, e); err != nil {
+        return nil, fmt.Errorf("failed to decode step: %v", err)
+    }
+
+    if e.URL == "" || e.Service == "" || e.Method == "" {
+        return nil, fmt.Errorf("url, service, and method are mandatory")
+    }
+
+    // Dial gRPC server
+    conn, err := grpc.DialContext(ctx, e.URL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+    if err != nil {
+        return nil, fmt.Errorf("failed to dial grpc %s: %v", e.URL, err)
+    }
+    defer conn.Close()
+
+    // Prepare request metadata
+    md := make([]string, 0, len(e.Headers)*2)
+    for k, v := range e.Headers {
+        md = append(md, k, v)
+    }
+
+    // Response handlers
+    var systemOut, systemErr strings.Builder
+    handler := &grpcurlHandler{
+        out:    &systemOut,
+        errOut: &systemErr,
+    }
+
+    // Descriptor source with reflection
+    descSource, err := grpcurl.DescriptorSourceFromServer(ctx, conn)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create descriptor source: %v", err)
+    }
+
+    // Request supplier
+    rf, formatter, err := grpcurl.RequestParserAndFormatterFor(grpcurl.FormatJSON, descSource, true, true, strings.NewReader(e.Data))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create request parser: %v", err)
+    }
+
+    // Invoke gRPC method
+    err = grpcurl.InvokeRPC(ctx, descSource, conn, fmt.Sprintf("%s/%s", e.Service, e.Method), md, handler, rf.Next)
+    result := Result{
+        SystemOut: systemOut.String(),
+        SystemErr: systemErr.String(),
+    }
+
+    // Handle gRPC status and error details
+    if err != nil {
+        if st, ok := status.FromError(err); ok {
+            result.Code = int(st.Code())
+            if trailers := handler.trailers; len(trailers) > 0 {
+                if details := trailers["grpc-status-details-bin"]; len(details) > 0 {
+                    detailBytes, err := base64.StdEncoding.DecodeString(details[0])
+                    if err == nil {
+                        var statusProto rpb.Status
+                        if err := proto.Unmarshal(detailBytes, &statusProto); err == nil {
+                            detailsMap := make(map[string]interface{})
+                            detailsMap["message"] = statusProto.Message
+                            detailsMap["code"] = statusProto.Code
+                            if len(statusProto.Details) > 0 {
+                                detailsList := make([]interface{}, len(statusProto.Details))
+                                for i, d := range statusProto.Details {
+                                    detailsList[i] = map[string]interface{}{
+                                        "type_url": d.TypeUrl,
+                                        "value":    base64.StdEncoding.EncodeToString(d.Value),
+                                    }
+                                }
+                                detailsMap["details"] = detailsList
+                            }
+                            result.Errors = detailsMap
+                        }
+                    }
+                }
+            }
+        } else {
+            return nil, fmt.Errorf("non-gRPC error: %v", err)
+        }
+    } else {
+        result.Code = 0
+    }
+
+    return result, nil
 }
 
-// ZeroValueResult return an empty implementation of this executor result
-func (Executor) ZeroValueResult() interface{} {
-	return Result{}
+// grpcurlHandler implements grpcurl.InvocationEventHandler
+type grpcurlHandler struct {
+    out      *strings.Builder
+    errOut   *strings.Builder
+    trailers metadata.MD
 }
 
-// GetDefaultAssertions return default assertions for type exec
-func (Executor) GetDefaultAssertions() *venom.StepAssertions {
-	return &venom.StepAssertions{Assertions: []venom.Assertion{"result.code ShouldEqual 0"}}
-}
-
-// Run execute TestStep of type exec
-func (Executor) Run(ctx context.Context, step venom.TestStep) (interface{}, error) {
-	// decode test
-	var e Executor
-	if err := mapstructure.Decode(step, &e); err != nil {
-		return nil, err
-	}
-
-	// prepare headers
-	headers := make([]string, len(e.Headers))
-	for k, v := range e.Headers {
-		headers = append(headers, fmt.Sprintf("%s: %s", k, v))
-	}
-
-	// prepare data
-	data, err := json.Marshal(e.Data)
-	if err != nil {
-		return nil, fmt.Errorf("runGrpcurl: Cannot marshal request data: %s", err)
-	}
-
-	result := Result{}
-	start := time.Now()
-
-	// prepare dial function
-	dial := func() (*grpc.ClientConn, error) {
-		dialTime := 10 * time.Second
-		if e.ConnectTimeout != nil && *e.ConnectTimeout > 0 {
-			dialTime = time.Duration(*e.ConnectTimeout * int64(time.Second))
-		}
-		ctx, cancel := context.WithTimeout(ctx, dialTime)
-		defer cancel()
-
-		var creds credentials.TransportCredentials
-
-		workdir := venom.StringVarFromCtx(ctx, "venom.testsuite.workdir")
-
-		// connect to a TLS server
-		if e.TLSRootCA != "" {
-			TLSRootCAFilepath := e.TLSRootCA
-			if !filepath.IsAbs(e.TLSRootCA) {
-				TLSRootCAFilepath = filepath.Join(workdir, e.TLSRootCA)
-			}
-			var TLSRootCA []byte
-			if _, err := os.Stat(TLSRootCAFilepath); err == nil {
-				TLSRootCA, err = os.ReadFile(TLSRootCAFilepath)
-				if err != nil {
-					return nil, fmt.Errorf("unable to read TLSRootCA from file %s", TLSRootCAFilepath)
-				}
-			} else {
-				TLSRootCA = []byte(e.TLSRootCA)
-			}
-
-			certPool := x509.NewCertPool()
-			if ok := certPool.AppendCertsFromPEM(TLSRootCA); !ok {
-				return nil, errors.New("failed to add root CA's certificate")
-			}
-			creds = credentials.NewTLS(&tls.Config{
-				ClientCAs:          certPool,
-				InsecureSkipVerify: e.IgnoreVerifySSL,
-			})
-
-			// connect to a mutual TLS server
-			var TLSClientCert, TLSClientKey []byte
-			if e.TLSClientCert != "" {
-				TLSClientCertFilepath := e.TLSClientCert
-				if !filepath.IsAbs(e.TLSClientCert) {
-					TLSClientCertFilepath = filepath.Join(workdir, e.TLSClientCert)
-				}
-				if _, err := os.Stat(TLSClientCertFilepath); err == nil {
-					TLSClientCert, err = os.ReadFile(TLSClientCertFilepath)
-					if err != nil {
-						return nil, fmt.Errorf("unable to read TLSClientCert from file %s", TLSClientCertFilepath)
-					}
-				} else {
-					TLSClientCert = []byte(e.TLSClientCert)
-				}
-			}
-
-			if e.TLSClientKey != "" {
-				TLSClientKeyFilepath := e.TLSClientKey
-				if !filepath.IsAbs(e.TLSClientKey) {
-					TLSClientKeyFilepath = filepath.Join(workdir, e.TLSClientKey)
-				}
-				if _, err := os.Stat(TLSClientKeyFilepath); err == nil {
-					TLSClientKey, err = os.ReadFile(TLSClientKeyFilepath)
-					if err != nil {
-						return nil, fmt.Errorf("unable to read TLSClientKey from file %s", TLSClientKeyFilepath)
-					}
-				} else {
-					TLSClientKey = []byte(e.TLSClientKey)
-				}
-			}
-
-			if len(TLSClientCert) > 0 && len(TLSClientKey) > 0 {
-				cert, err := tls.X509KeyPair(TLSClientCert, TLSClientKey)
-				if err != nil {
-					return nil, fmt.Errorf("failed to parse x509 mTLS certificate or key: %s", err)
-				}
-				creds = credentials.NewTLS(&tls.Config{
-					ClientCAs:          certPool,
-					InsecureSkipVerify: e.IgnoreVerifySSL,
-					Certificates:       []tls.Certificate{cert},
-				})
-			}
-		}
-
-		cc, err := grpcurl.BlockingDial(ctx, "tcp", e.URL, creds)
-		if err != nil {
-			return nil, fmt.Errorf("failed to dial grpc: %w", err)
-		}
-		return cc, nil
-	}
-
-	var cc *grpc.ClientConn
-	var descSource grpcurl.DescriptorSource
-	var refClient *grpcreflect.Client
-	md := grpcurl.MetadataFromHeaders(headers)
-	refCtx := metadata.NewOutgoingContext(ctx, md)
-	cc, err = dial()
-	if err != nil {
-		return Result{Err: err.Error()}, fmt.Errorf("grpc dial error: %w", err)
-	}
-	refClient = grpcreflect.NewClient(refCtx, reflectpb.NewServerReflectionClient(cc))
-	descSource = grpcurl.DescriptorSourceFromServer(ctx, refClient)
-
-	// arrange for the RPCs to be cleanly shutdown
-	defer func() {
-		if refClient != nil {
-			refClient.Reset()
-			refClient = nil
-		}
-		if cc != nil {
-			_ = cc.Close()
-			cc = nil
-		}
-	}()
-
-	// prepare request and send
-	in := bytes.NewReader(data)
-	rf, formatter, err := grpcurl.RequestParserAndFormatterFor(
-		grpcurl.FormatJSON,
-		descSource,
-		e.JSONDefaultFields,
-		e.IncludeTextSeparator,
-		in,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to construct request parser and formatter %s", err)
-	}
-
-	// prepare custom handler to handle response
-	handle := customHandler{
-		formatter,
-		&result,
-		nil,
-	}
-
-	// invoke the gRPC
-	err = grpcurl.InvokeRPC(ctx, descSource, cc, e.Service+"/"+e.Method, headers, &handle, rf.Next)
-	if err != nil {
-		return nil, err
-	}
-
-	elapsed := time.Since(start)
-	result.TimeSeconds = elapsed.Seconds()
-
-	if handle.err != nil {
-		result.Err = handle.err.Error()
-	}
-
-	// parse stdout as JSON
-	var outJSONArray []interface{}
-	if err := venom.JSONUnmarshal([]byte(result.Systemout), &outJSONArray); err != nil {
-		outJSONMap := map[string]interface{}{}
-		if err2 := venom.JSONUnmarshal([]byte(result.Systemout), &outJSONMap); err2 == nil {
-			result.SystemoutJSON = outJSONMap
-		}
-	} else {
-		result.SystemoutJSON = outJSONArray
-	}
-
-	// parse stderr output as JSON
-	var errJSONArray []interface{}
-	if err := venom.JSONUnmarshal([]byte(result.Systemout), &errJSONArray); err != nil {
-		errJSONMap := map[string]interface{}{}
-		if err2 := venom.JSONUnmarshal([]byte(result.Systemout), &errJSONMap); err2 == nil {
-			result.SystemoutJSON = errJSONMap
-		}
-	} else {
-		result.SystemoutJSON = errJSONArray
-	}
-
-	return result, nil
+func (h *grpcurlHandler) OnResolveMethod(*grpcurl.DescriptorInfo)                    {}
+func (h *grpcurlHandler) OnSendData()                                               {}
+func (h *grpcurlHandler) OnReceiveData(s string)                                    { h.out.WriteString(s) }
+func (h *grpcurlHandler) OnReceiveHeaders(md metadata.MD)                           {}
+func (h *grpcurlHandler) OnReceiveResponse(ctx context.Context, m proto.Message)    { h.out.WriteString(fmt.Sprintf("%v", m)) }
+func (h *grpcurlHandler) OnReceiveTrailers(st *status.Status, md metadata.MD) {
+    h.trailers = md
+    if st != nil && st.Code() != codes.OK {
+        h.errOut.WriteString(st.Message())
+    }
 }
