@@ -158,26 +158,26 @@ type TestCaseInput struct {
 }
 
 type TestCase struct {
-	TestCaseInput
+    TestCaseInput
 
-	// Computed
-	originalName string
-	number       int
-	Skipped      []Skipped `json:"skipped" yaml:"-"`
-	Status       Status    `json:"status" yaml:"-"`
+    // Computed
+    originalName string
+    number       int
+    Skipped      []Skipped `json:"skipped" yaml:"-"`
+    Status       Status    `json:"status" yaml:"-"`
 
-	Duration float64   `json:"duration" yaml:"-"`
-	Start    time.Time `json:"start" yaml:"-"`
-	End      time.Time `json:"end" yaml:"-"`
+    Duration float64   `json:"duration" yaml:"-"`
+    Start    time.Time `json:"start" yaml:"-"`
+    End      time.Time `json:"end" yaml:"-"`
 
-	testSteps       []TestStep       `json:"-" yaml:"-"`
-	TestStepResults []TestStepResult `json:"results" yaml:"-"`
-	TestSuiteVars   H                `json:"-" yaml:"-"`
+    testSteps       []TestStep       `json:"-" yaml:"-"`
+    TestStepResults []TestStepResult `json:"results" yaml:"-"`
+    TestSuiteVars   H                `json:"-" yaml:"-"`
 
-	computedVars    H        `json:"-" yaml:"-"`
-	computedVerbose []string `json:"-" yaml:"-"`
-	IsExecutor      bool     `json:"-" yaml:"-"`
-	IsEvaluated     bool     `json:"-" yaml:"-"`
+    computedVars    H        `json:"-" yaml:"-"`
+    computedVerbose []string `json:"-" yaml:"-"`
+    IsExecutor      bool     `json:"-" yaml:"-"`
+    IsEvaluated     bool     `json:"-" yaml:"-"`
 }
 
 type TestStepResult struct {
