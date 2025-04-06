@@ -1,186 +1,185 @@
 package http
 
 import (
-    "context"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
-    "os/exec"
-    "testing"
-    "time"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"testing"
+	"time"
 
-    "github.com/ovh/venom"
-    "github.com/stretchr/testify/require"
+	"github.com/ovh/venom"
+	"github.com/stretchr/testify/require"
 )
 
 func generateClientFile(t *testing.T) (string, string) {
-    TLSClientKey, err := os.CreateTemp(os.TempDir(), "TLSClientKey.*.key")
-    require.NoError(t, err)
-    TLSClientKeyFileName := TLSClientKey.Name()
-    t.Logf("generating file %q", TLSClientKeyFileName)
-    cmd := exec.Command("openssl", "genrsa", "-out", TLSClientKeyFileName, "2048")
-    output, err := cmd.CombinedOutput()
-    t.Log(string(output))
-    require.NoError(t, err)
+	TLSClientKey, err := os.CreateTemp(os.TempDir(), "TLSClientKey.*.key")
+	require.NoError(t, err)
+	TLSClientKeyFileName := TLSClientKey.Name()
+	t.Logf("generating file %q", TLSClientKeyFileName)
+	cmd := exec.Command("openssl", "genrsa", "-out", TLSClientKeyFileName, "2048")
+	output, err := cmd.CombinedOutput()
+	t.Log(string(output))
+	require.NoError(t, err)
 
-    TLSClientCert, err := os.CreateTemp(os.TempDir(), "TLSClientCert.*.crt")
-    require.NoError(t, err)
-    TLSClientCertFilename := TLSClientCert.Name()
-    t.Logf("generating file %q", TLSClientCertFilename)
-    cmd = exec.Command("openssl", "req", "-batch", "-subj", "/C=GB/ST=Yorks/L=York/O=MyCompany Ltd./OU=IT/CN=mysubdomain.mydomain.com", "-new", "-x509", "-sha256", "-key", TLSClientKeyFileName, "-out", TLSClientCertFilename, "-days", "365")
-    output, err = cmd.CombinedOutput()
-    t.Log(string(output))
-    require.NoError(t, err)
+	TLSClientCert, err := os.CreateTemp(os.TempDir(), "TLSClientCert.*.crt")
+	require.NoError(t, err)
+	TLSClientCertFilename := TLSClientCert.Name()
+	t.Logf("generating file %q", TLSClientCertFilename)
+	cmd = exec.Command("openssl", "req", "-batch", "-subj", "/C=GB/ST=Yorks/L=York/O=MyCompany Ltd./OU=IT/CN=mysubdomain.mydomain.com", "-new", "-x509", "-sha256", "-key", TLSClientKeyFileName, "-out", TLSClientCertFilename, "-days", "365")
+	output, err = cmd.CombinedOutput()
+	t.Log(string(output))
+	require.NoError(t, err)
 
-    return TLSClientKeyFileName, TLSClientCertFilename
+	return TLSClientKeyFileName, TLSClientCertFilename
 }
 
 func TestExecutor_TLSOptions_From_File(t *testing.T) {
-    TLSClientKeyFileName, TLSClientCertFilename := generateClientFile(t)
+	TLSClientKeyFileName, TLSClientCertFilename := generateClientFile(t)
 
-    e := Executor{
-        IgnoreVerifySSL: true,
-        TLSClientCert:   TLSClientCertFilename,
-        TLSClientKey:    TLSClientKeyFileName,
-        TLSRootCA:       "../../tests/http/tls/digicert-root-ca.crt",
-    }
-    opts, err := e.TLSOptions(context.Background())
-    require.NoError(t, err)
-    require.Len(t, opts, 3)
+	e := Executor{
+		IgnoreVerifySSL: true,
+		TLSClientCert:   TLSClientCertFilename,
+		TLSClientKey:    TLSClientKeyFileName,
+		TLSRootCA:       "../../tests/http/tls/digicert-root-ca.crt",
+	}
+	opts, err := e.TLSOptions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, opts, 3)
 }
 
 func TestExecutor_TLSOptions_From_String(t *testing.T) {
-    TLSClientKeyFileName, TLSClientCertFilename := generateClientFile(t)
+	TLSClientKeyFileName, TLSClientCertFilename := generateClientFile(t)
 
-    TLSClientCert, err := os.ReadFile(TLSClientCertFilename)
-    require.NoError(t, err)
-    TLSClientKey, err := os.ReadFile(TLSClientKeyFileName)
-    require.NoError(t, err)
-    TLSRootCA, err := os.ReadFile("../../tests/http/tls/digicert-root-ca.crt")
-    require.NoError(t, err)
-    e := Executor{
-        TLSClientCert: string(TLSClientCert),
-        TLSClientKey:  string(TLSClientKey),
-        TLSRootCA:     string(TLSRootCA),
-    }
-    opts, err := e.TLSOptions(context.Background())
-    require.NoError(t, err)
-    require.Len(t, opts, 2)
+	TLSClientCert, err := os.ReadFile(TLSClientCertFilename)
+	require.NoError(t, err)
+	TLSClientKey, err := os.ReadFile(TLSClientKeyFileName)
+	require.NoError(t, err)
+	TLSRootCA, err := os.ReadFile("../../tests/http/tls/digicert-root-ca.crt")
+	require.NoError(t, err)
+	e := Executor{
+		TLSClientCert: string(TLSClientCert),
+		TLSClientKey:  string(TLSClientKey),
+		TLSRootCA:     string(TLSRootCA),
+	}
+	opts, err := e.TLSOptions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, opts, 2)
 }
 
 func TestInterpolation_Of_String(t *testing.T) {
-    e := &Executor{
-        Method:           "",
-        URL:              "http://example.com",
-        Path:             "",
-        BodyFile:         "tests/http/bodyfile_with_interpolation",
-        PreserveBodyFile: false,
-        MultipartForm:    nil,
-        Headers:          Headers{},
-    }
-    ctx := context.Background()
-    keys := make(map[string]string)
-    keys["fullName"] = "{{.name}} test"
-    keys["name"] = "123"
+	e := &Executor{
+		Method:           "",
+		URL:              "http://example.com",
+		Path:             "",
+		BodyFile:         "tests/http/bodyfile_with_interpolation",
+		PreserveBodyFile: false,
+		MultipartForm:    nil,
+		Headers:          Headers{},
+	}
+	ctx := context.Background()
+	keys := make(map[string]string)
+	keys["fullName"] = "{{.name}} test"
+	keys["name"] = "123"
 
-    ctx = context.WithValue(ctx, venom.ContextKey("vars"), []string{"fullName", "name"})
-    for k := range keys {
-        ctx = context.WithValue(ctx, venom.ContextKey(fmt.Sprintf("var.%s", k)), keys[k])
-    }
-    vars := venom.AllVarsFromCtx(ctx)
-    fmt.Println("vars: ", vars)
-    require.Len(t, vars, 2)
-    r, err := e.getRequest(ctx, "../../")
-    require.NoError(t, err)
-    defer r.Body.Close()
+	ctx = context.WithValue(ctx, venom.ContextKey("vars"), []string{"fullName", "name"})
+	for k := range keys {
+		ctx = context.WithValue(ctx, venom.ContextKey(fmt.Sprintf("var.%s", k)), keys[k])
+	}
+	vars := venom.AllVarsFromCtx(ctx)
+	fmt.Println("vars: ", vars)
+	require.Len(t, vars, 2)
+	r, err := e.getRequest(ctx, "../../")
+	require.NoError(t, err)
+	defer r.Body.Close()
 
-    b, err := io.ReadAll(r.Body)
-    require.NoError(t, err)
-    fmt.Printf("Output: %s\n", string(b))
-    require.Equal(t, "{\n    \"key\": \"123 test\"\n}", string(b))
+	b, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	fmt.Printf("Output: %s\n", string(b))
+	require.Equal(t, "{\n    \"key\": \"123 test\"\n}", string(b))
 }
 
 func TestInterpolation_without_match_Of_String(t *testing.T) {
-    e := &Executor{
-        Method:           "",
-        URL:              "http://example.com",
-        Path:             "",
-        BodyFile:         "tests/http/bodyfile_with_interpolation",
-        PreserveBodyFile: false,
-        MultipartForm:    nil,
-        Headers:          Headers{},
-    }
-    ctx := context.Background()
-    keys := make(map[string]string)
-    keys["fullName"] = "{{.name}} test"
+	e := &Executor{
+		Method:           "",
+		URL:              "http://example.com",
+		Path:             "",
+		BodyFile:         "tests/http/bodyfile_with_interpolation",
+		PreserveBodyFile: false,
+		MultipartForm:    nil,
+		Headers:          Headers{},
+	}
+	ctx := context.Background()
+	keys := make(map[string]string)
+	keys["fullName"] = "{{.name}} test"
 
-    ctx = context.WithValue(ctx, venom.ContextKey("vars"), []string{"fullName"})
-    for k := range keys {
-        ctx = context.WithValue(ctx, venom.ContextKey(fmt.Sprintf("var.%s", k)), keys[k])
-    }
+	ctx = context.WithValue(ctx, venom.ContextKey("vars"), []string{"fullName"})
+	for k := range keys {
+		ctx = context.WithValue(ctx, venom.ContextKey(fmt.Sprintf("var.%s", k)), keys[k])
+	}
 
-    _, err := e.getRequest(ctx, "../../")
-    require.Errorf(t, err, "unable to interpolate file due to unresolved variables {{.name}}")
+	_, err := e.getRequest(ctx, "../../")
+	require.Errorf(t, err, "unable to interpolate file due to unresolved variables {{.name}}")
 }
 
 func TestExecutor_SystemResolver(t *testing.T) {
-    mux := http.NewServeMux()
-    server := &http.Server{Addr: ":8080", Handler: mux}
-    go func() {
-        mux.HandleFunc("/system-test", func(w http.ResponseWriter, r *http.Request) {
-            w.WriteHeader(http.StatusOK)
-            fmt.Fprintf(w, "OK")
-        })
-        if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            t.Logf("Server error: %v", err)
-        }
-    }()
-    defer server.Shutdown(context.Background())
+	mux := http.NewServeMux()
+	server := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		mux.HandleFunc("/system-test", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "OK")
+		})
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			t.Logf("Server error: %v", err)
+		}
+	}()
+	defer server.Shutdown(context.Background())
 
-    time.Sleep(100 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
-    e := Executor{
-        Method:  "GET",
-        URL:     "http://localhost:8080/system-test",
-        Headers: Headers{},
-    }
+	e := Executor{
+		Method:  "GET",
+		URL:     "http://localhost:8080/system-test",
+		Headers: Headers{},
+	}
 
-    ctx := context.Background()
-    result, err := e.Run(ctx, venom.TestStep{
-        "method":  "GET",
-        "url":     "http://localhost:8080/system-test",
-        "headers": map[string]string{},
-    })
-    require.NoError(t, err)
+	ctx := context.Background()
+	result, err := e.Run(ctx, venom.TestStep{
+		"method":  "GET",
+		"url":     "http://localhost:8080/system-test",
+		"headers": map[string]string{},
+	})
+	require.NoError(t, err)
 
-    res, ok := result.(Result)
-    require.True(t, ok)
-    require.Equal(t, 200, res.StatusCode)
-    require.Equal(t, "OK", res.Body)
-    t.Logf("System resolver test passed: status=%d, body=%s", res.StatusCode, res.Body)
+	res, ok := result.(Result)
+	require.True(t, ok)
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, "OK", res.Body)
+	t.Logf("System resolver test passed: status=%d, body=%s", res.StatusCode, res.Body)
 }
 
 func TestExecutor_CustomDNS(t *testing.T) {
-    e := Executor{
-        Method:  "GET",
-        URL:     "http://example.com",
-        DNS:     []string{"8.8.8.8"},
-        Headers: Headers{},
-    }
+	e := Executor{
+		Method:  "GET",
+		URL:     "http://example.com",
+		DNS:     []string{"8.8.8.8"},
+		Headers: Headers{},
+	}
 
-    ctx := context.Background()
-    result, err := e.Run(ctx, venom.TestStep{
-        "method":  "GET",
-        "url":     "http://example.com",
-        "dns":     []string{"8.8.8.8"},
-        "headers": map[string]string{},
-    })
-    require.NoError(t, err)
+	ctx := context.Background()
+	result, err := e.Run(ctx, venom.TestStep{
+		"method":  "GET",
+		"url":     "http://example.com",
+		"dns":     []string{"8.8.8.8"},
+		"headers": map[string]string{},
+	})
+	require.NoError(t, err)
 
-    res, ok := result.(Result)
-    require.True(t, ok)
-    require.Equal(t, 200, res.StatusCode)
-    t.Logf("Custom DNS test passed: status=%d", res.StatusCode)
+	res, ok := result.(Result)
+	require.True(t, ok)
+	require.Equal(t, 200, res.StatusCode)
+	t.Logf("Custom DNS test passed: status=%d", res.StatusCode)
 }
-
